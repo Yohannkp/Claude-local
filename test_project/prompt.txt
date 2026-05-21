@@ -1,0 +1,7 @@
+Crée un script Python qui:
+- Lit un fichier CSV nommé "data.csv"
+- Filtre les lignes où la colonne "status" vaut "active"
+- Affiche les résultats dans la console
+- Sauvegarde le résultat filtré dans "filtered.csv"
+
+Le script doit avoir une fonction principale et utiliser le module csv standard.
