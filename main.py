@@ -2,6 +2,7 @@ import argparse
 import json
 import os
 import re
+import subprocess
 import sys
 
 # Force UTF-8 output on Windows to avoid UnicodeEncodeError with emoji/special chars
@@ -858,6 +859,33 @@ def fallback_offline_answer(query, index):
     )
 
 
+def cmd_run(args=None):
+    root = os.getcwd()
+    _self = os.path.abspath(__file__)
+    candidates = ['main.py', 'app.py', 'run.py', 'server.py', 'index.py']
+    entry = None
+    for name in candidates:
+        path = os.path.join(root, name)
+        if os.path.isfile(path) and os.path.abspath(path) != _self:
+            entry = path
+            break
+    if not entry:
+        for sub in ('src', 'app'):
+            for name in candidates:
+                path = os.path.join(root, sub, name)
+                if os.path.isfile(path):
+                    entry = path
+                    break
+    if not entry:
+        print("Aucun point d'entrée trouvé (main.py, app.py, run.py...).")
+        return
+    print(f"Lancement: {os.path.relpath(entry, root)}")
+    try:
+        subprocess.run([sys.executable, entry], cwd=os.path.dirname(entry))
+    except KeyboardInterrupt:
+        print("\nArrêté.")
+
+
 def repl():
     print("Mode interactif SELF_DEV_AGENT. Tapez 'help' pour l'aide, 'exit' pour quitter.")
     while True:
@@ -884,7 +912,7 @@ def repl():
             print("Commandes disponibles :\n  <requête libre>\n  locate <nom>\n  read <fichier>\n  edit <fichier> <instruction>\n  append <fichier> <instruction>\n  delete <fichier> <symbole>\n  prompt/init/build\n  exit")
             continue
 
-        if command in ('locate', 'read', 'edit', 'append', 'delete', 'ask', 'create', 'prompt', 'init', 'build', 'setup'):
+        if command in ('locate', 'read', 'edit', 'append', 'delete', 'ask', 'create', 'prompt', 'init', 'build', 'setup', 'run'):
             if command == 'locate' and rest:
                 cmd_locate(argparse.Namespace(name=rest.strip()))
             elif command == 'read' and rest:
@@ -917,6 +945,8 @@ def repl():
                     dispatch_action('create', {'action': 'create', 'file': '', 'instruction': rest}, rest)
             elif command in ('prompt', 'init', 'build', 'setup'):
                 dispatch_action('prompt', {'action': 'prompt', 'instruction': ''}, command)
+            elif command == 'run':
+                cmd_run()
             else:
                 print("Commande incomplète. Tapez help.")
         else:

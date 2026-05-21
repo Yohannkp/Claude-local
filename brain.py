@@ -8,8 +8,26 @@ import urllib.error
 import urllib.request
 
 
-OLLAMA_URL = "http://localhost:11434/api/generate"
-DEFAULT_MODEL = os.environ.get('SELF_DEV_AGENT_MODEL', 'qwen2.5-coder:7b')
+OLLAMA_URL = "http://localhost:11434/api/chat"
+OLLAMA_TAGS_URL = "http://localhost:11434/api/tags"
+_PREFERRED_MODELS = ['qwen2.5-coder:7b', 'qwen2.5-coder:3b', 'deepseek-coder:6.7b',
+                     'deepseek-coder:latest', 'llama3.1:8b', 'llama3:8b', 'mistral:instruct']
+
+def _resolve_default_model():
+    env = os.environ.get('SELF_DEV_AGENT_MODEL', '')
+    try:
+        with urllib.request.urlopen(OLLAMA_TAGS_URL, timeout=3) as r:
+            models = [m['name'] for m in json.loads(r.read()).get('models', [])]
+        if env and env in models:
+            return env
+        for pref in _PREFERRED_MODELS:
+            if pref in models:
+                return pref
+        return models[0] if models else 'qwen2.5-coder:7b'
+    except Exception:
+        return env or 'qwen2.5-coder:7b'
+
+DEFAULT_MODEL = _resolve_default_model()
 
 ROUTER_SYSTEM_PROMPT = """Tu es le cerveau décisionnel d'un assistant de développement. Ton rôle est de COMPRENDRE ce que l'utilisateur veut VRAIMENT, même quand c'est mal formulé, incomplet, ou informel.
 
@@ -264,11 +282,9 @@ def ask_ollama(prompt, model=None, response_format=None):
 def ask_ollama_with_options(prompt, model=None, response_format=None, temperature=0.2):
     payload = {
         'model': model or DEFAULT_MODEL,
-        'prompt': prompt,
+        'messages': [{'role': 'user', 'content': prompt}],
         'stream': False,
-        'options': {
-            'temperature': temperature,
-        },
+        'options': {'temperature': temperature},
     }
     if response_format is not None:
         payload['format'] = response_format
@@ -278,7 +294,7 @@ def ask_ollama_with_options(prompt, model=None, response_format=None, temperatur
     try:
         with urllib.request.urlopen(request) as response:
             response_json = json.loads(response.read().decode('utf-8'))
-            return response_json.get('response', '')
+            return response_json.get('message', {}).get('content', '')
     except urllib.error.HTTPError as error:
         raise RuntimeError(f'Erreur HTTP Ollama: {error.code} {error.reason}') from error
     except urllib.error.URLError as error:
@@ -954,7 +970,7 @@ def is_real_code(content, file_path=''):
 def create_file(file_path, content):
     """Crée un nouveau fichier avec le contenu fourni."""
     root = project_root()
-    abs_path = os.path.join(root, file_path)
+    abs_path = os.path.join(root, file_path.lstrip('/\\'))
 
     parent_dir = os.path.dirname(abs_path)
     if parent_dir:
@@ -1121,7 +1137,7 @@ Maintenant, genere le projet demande avec du code REEL et FONCTIONNEL."""
             continue
 
         try:
-            abs_path = os.path.join(project_root(), path)
+            abs_path = os.path.join(project_root(), path.lstrip('/\\'))
 
             # Vérifier si le fichier existe déjà
             file_exists = os.path.exists(abs_path)
@@ -1194,20 +1210,27 @@ RÈGLES:
 8. Réponds UNIQUEMENT avec le JSON, pas de texte autour.
 """
 
-    raw = ask_ollama_with_options(prompt, model=model or 'deepseek-coder:6.7b', response_format='json', temperature=0.3)
+    raw = ask_ollama_with_options(prompt, model=model or DEFAULT_MODEL, response_format='json', temperature=0.3)
 
     raw = clean_json_response(raw)
     result = json.loads(raw)
     created_files = []
 
+    # Fichiers du projet SELF_DEV_AGENT à ne jamais écraser
+    _PROTECTED = {'brain.py', 'main.py', 'install.py', 'uninstall.py', 'scanner.py', 'selfdev.bat'}
+
     for file_info in result.get('files', []):
         path = file_info.get('path', '')
         content = file_info.get('content', '')
-        if path and content:
-            try:
-                create_file(path, content)
-                created_files.append(path)
-            except Exception as e:
-                print(f"Erreur création {path}: {e}")
+        if not path or not content:
+            continue
+        if os.path.basename(path) in _PROTECTED:
+            print(f"  ! Ignore (fichier protégé): {path}")
+            continue
+        try:
+            create_file(path, content)
+            created_files.append(path)
+        except Exception as e:
+            print(f"Erreur création {path}: {e}")
 
     return created_files
