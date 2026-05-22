@@ -1032,107 +1032,91 @@ def load_project_prompt():
         return None, None
 
 
+def _write_file_info(file_info, created_files, updated_files):
+    path = file_info.get('path', '').lstrip('/\\')
+    content = file_info.get('content', '')
+    if not path or not content or not is_real_code(content, path):
+        return
+    abs_path = os.path.join(project_root(), path)
+    file_exists = os.path.exists(abs_path)
+    os.makedirs(os.path.dirname(abs_path), exist_ok=True) if os.path.dirname(abs_path) else None
+    with open(abs_path, 'w', encoding='utf-8') as f:
+        f.write(content)
+    if path.endswith('.py'):
+        try:
+            validate_python_syntax(abs_path)
+        except Exception as e:
+            print(f"  ⚠ Syntaxe à corriger dans {path}: {e}")
+    if not file_exists:
+        update_index_after_creation(path)
+    (updated_files if file_exists else created_files).append(path)
+
+
+def _generate_file(path, directive, context_summary):
+    """Génère le contenu d'un seul fichier."""
+    prompt = f"""Tu es un développeur senior. Génère le fichier '{path}' pour ce projet.
+
+DIRECTIVE DU PROJET:
+{directive[:800]}
+
+FICHIERS DÉJÀ CRÉÉS: {context_summary}
+
+RÈGLES:
+- Génère UNIQUEMENT le contenu du fichier '{path}', complet et fonctionnel
+- Tous les imports nécessaires inclus
+- Pas de placeholder, pas de TODO, du vrai code
+
+FORMAT JSON:
+{{"path": "{path}", "content": "# code complet ici"}}"""
+    raw = ask_ollama_with_options(prompt, model=DEFAULT_MODEL, response_format='json', temperature=0.1)
+    raw = clean_json_response(raw)
+    return json.loads(raw)
+
+
 def apply_project_prompt(prompt_content):
-    """Applique le prompt du projet en générant/mettant à jour les fichiers.
+    """Génère le projet en deux passes : liste des fichiers, puis chaque fichier séparément."""
 
-    Args:
-        prompt_content: Contenu du fichier de prompt
-
-    Returns:
-        list: Fichiers créés ou modifiés
-    """
-    index = load_index()
-    file_list_summary = format_file_index_for_llm(index)
-
-    prompt = f"""Tu es un architecte logiciel senior fullstack. Tu dois livrer un projet COMPLET et FONCTIONNEL.
-
-FICHIERS EXISTANTS: {file_list_summary}
+    # Passe 1 : demander la liste des fichiers à créer
+    plan_prompt = f"""Tu es un architecte senior. Analyse cette directive et liste TOUS les fichiers à créer.
 
 DIRECTIVE:
 {prompt_content}
 
-COMPORTEMENT ATTENDU D'UN SENIOR:
-- Si la directive demande une "app complète", tu génères TOUT: modèles, routes CRUD, auth, frontend, config, requirements, README
-- Tu n'attends pas qu'on te demande le CRUD — si il y a des entités, elles ont toutes Create/Read/Update/Delete
-- Tu n'attends pas qu'on te demande les schemas — tu les crées
-- Tu n'attends pas qu'on te demande les tests — tu en crées si pertinent
-- Chaque fichier est COMPLET, avec tous ses imports, prêt à être exécuté
-- Les fichiers sont cohérents entre eux (mêmes noms de classes, mêmes imports)
+Retourne UNIQUEMENT un JSON avec la liste des chemins de fichiers:
+{{"files": ["backend/main.py", "backend/app/db/models.py", "frontend/index.html", ...]}}
 
-INTERDIT:
-- Fichiers vides ou avec juste "# TODO"
-- Fonctions sans corps (juste `pass` ou `...`)
-- Imports manquants
-- Incohérences entre fichiers
+Sois exhaustif. Inclus tous les fichiers nécessaires pour que le projet fonctionne."""
 
-FORMAT (JSON strict, pas de markdown autour):
-{{
-    "files": [
-        {{"path": "backend/main.py", "action": "create", "content": "# code complet ici"}},
-        {{"path": "backend/models.py", "action": "create", "content": "# code complet ici"}}
-    ]
-}}
-
-Génère maintenant le projet COMPLET. Sois exhaustif."""
-
-    raw = ask_ollama_with_options(prompt, model=DEFAULT_MODEL, response_format='json', temperature=0.3)
+    raw = ask_ollama_with_options(plan_prompt, model=DEFAULT_MODEL, response_format='json', temperature=0.1)
     raw = clean_json_response(raw)
-    result = json.loads(raw)
+    plan = json.loads(raw)
+    file_paths = [p.lstrip('/\\') for p in plan.get('files', []) if p]
+
+    if not file_paths:
+        print("Le modèle n'a pas retourné de liste de fichiers.")
+        return [], []
+
+    print(f"\nPlan: {len(file_paths)} fichiers à générer")
+    for p in file_paths:
+        print(f"  - {p}")
+    print()
 
     created_files = []
     updated_files = []
-    skipped_files = []
+    _PROTECTED = {'brain.py', 'main.py', 'install.py', 'uninstall.py', 'scanner.py', 'selfdev.bat'}
 
-    for file_info in result.get('files', []):
-        path = file_info.get('path', '')
-        content = file_info.get('content', '')
-        action = file_info.get('action', 'create')
-
-        if not path or not content:
+    # Passe 2 : générer chaque fichier individuellement
+    for path in file_paths:
+        if os.path.basename(path) in _PROTECTED:
+            print(f"  ! Ignoré (protégé): {path}")
             continue
-
-        # Refuser le contenu placeholder / trop court
-        if not is_real_code(content, path):
-            skipped_files.append(path)
-            print(f"  ! Ignore (contenu placeholder): {path}")
-            continue
-
+        print(f"  Génération: {path}...")
         try:
-            abs_path = os.path.join(project_root(), path.lstrip('/\\'))
-
-            # Vérifier si le fichier existe déjà
-            file_exists = os.path.exists(abs_path)
-
-            if file_exists:
-                # Créer un backup avant modification
-                backup_path = create_backup(abs_path)
-                original_size = os.path.getsize(abs_path)
-            else:
-                # Créer les répertoires parents
-                parent_dir = os.path.dirname(abs_path)
-                if parent_dir:
-                    os.makedirs(parent_dir, exist_ok=True)
-
-            with open(abs_path, 'w', encoding='utf-8') as f:
-                f.write(content)
-
-            # Valider syntaxe Python — avertir seulement, ne pas rejeter
-            if path.endswith('.py'):
-                try:
-                    validate_python_syntax(abs_path)
-                except Exception as e:
-                    print(f"  ⚠ Syntaxe à corriger dans {path}: {e}")
-
-            if not file_exists:
-                update_index_after_creation(path)
-
-            if action == 'update' or file_exists:
-                updated_files.append(path)
-            else:
-                created_files.append(path)
-
+            context = ', '.join(created_files[-5:]) if created_files else 'aucun'
+            file_info = _generate_file(path, prompt_content, context)
+            _write_file_info(file_info, created_files, updated_files)
         except Exception as e:
-            print(f"Erreur traitement {path}: {e}")
+            print(f"  ✗ Erreur {path}: {e}")
 
     return created_files, updated_files
 
