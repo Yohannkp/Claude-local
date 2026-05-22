@@ -1065,12 +1065,26 @@ RÈGLES:
 - Génère UNIQUEMENT le contenu du fichier '{path}', complet et fonctionnel
 - Tous les imports nécessaires inclus
 - Pas de placeholder, pas de TODO, du vrai code
+- Le contenu doit être une STRING JSON valide (échappe les guillemets avec \\")
 
-FORMAT JSON:
-{{"path": "{path}", "content": "# code complet ici"}}"""
+FORMAT JSON STRICT (un seul objet, pas de tableau):
+{{"path": "{path}", "content": "code ici sur une ligne avec \\n pour les sauts de ligne"}}"""
     raw = ask_ollama_with_options(prompt, model=DEFAULT_MODEL, response_format='json', temperature=0.1)
     raw = clean_json_response(raw)
-    return json.loads(raw)
+
+    # Si le modèle retourne un tableau, prendre le premier élément
+    if raw.strip().startswith('['):
+        items = json.loads(raw)
+        return items[0] if items else {}
+
+    result = json.loads(raw)
+    # Si le modèle retourne {"files": [...]}, extraire le bon fichier
+    if 'files' in result:
+        for f in result['files']:
+            if f.get('path', '').endswith(os.path.basename(path)):
+                return f
+        return result['files'][0] if result['files'] else {}
+    return result
 
 
 def apply_project_prompt(prompt_content):
@@ -1103,11 +1117,15 @@ Sois exhaustif. Inclus tous les fichiers nécessaires pour que le projet fonctio
 
     created_files = []
     updated_files = []
+    # Protéger uniquement les fichiers à la RACINE du projet SELF_DEV_AGENT
+    _SELF_ROOT = os.path.abspath(os.path.dirname(__file__))
     _PROTECTED = {'brain.py', 'main.py', 'install.py', 'uninstall.py', 'scanner.py', 'selfdev.bat'}
 
     # Passe 2 : générer chaque fichier individuellement
     for path in file_paths:
-        if os.path.basename(path) in _PROTECTED:
+        # Protéger seulement si le fichier serait écrit dans le dossier SELF_DEV_AGENT lui-même
+        abs_target = os.path.abspath(os.path.join(project_root(), path))
+        if os.path.basename(path) in _PROTECTED and os.path.dirname(abs_target) == _SELF_ROOT:
             print(f"  ! Ignoré (protégé): {path}")
             continue
         print(f"  Génération: {path}...")
