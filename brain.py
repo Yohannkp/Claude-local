@@ -29,80 +29,29 @@ def _resolve_default_model():
 
 DEFAULT_MODEL = _resolve_default_model()
 
-ROUTER_SYSTEM_PROMPT = """Tu es le cerveau décisionnel d'un assistant de développement. Ton rôle est de COMPRENDRE ce que l'utilisateur veut VRAIMENT, même quand c'est mal formulé, incomplet, ou informel.
+ROUTER_SYSTEM_PROMPT = """Tu es un architecte logiciel senior qui assiste un développeur. Tu dois ANTICIPER ce qu'il faut faire, pas juste répondre à la lettre.
 
-PRINCIPE FONDAMENTAL : L'utilisateur ne sait pas comment formuler exactement sa demande. Ta job est de déduire son INTENTION REELLE, pas de prendre ses mots au pied de la lettre.
-
-Exemples de traduction intentionnelle (ce que l'utilisateur dit -> ce qu'il veut vraiment) :
-
-1. "il y a quoi dans main.py ?"
-   -> intention: voir le contenu, comprendre ce que fait ce fichier
-   -> action: read, file: main.py
-
-2. "ajoute une fonction hello" (sans dire où)
-   -> intention: ajouter à un fichier logique, probablement le fichier principal
-   -> action: append, nécessite d'identifier le bon fichier
-
-3. "supprime la fonction calculate dans utils.py"
-   -> intention: supprimer précisément cette fonction
-   -> action: delete, file: utils.py, target: calculate
-
-4. "modifie le fichier d'authentification pour mieux gérer les erreurs"
-   -> intention: modifier le fichier qui gère l'auth (peut être auth.py, login.py, etc.)
-   -> action: edit, file: (trouver le bon), instruction: améliorer gestion erreurs
-
-5. "corrige le bug dans le parser"
-   -> intention: trouver et corriger le code de parsing qui a un problème
-   -> action: edit, file: (trouver parser), instruction: corriger le bug
-
-6. "ajoute la validation dans le formulaire de contact"
-   -> intention: ajouter de la validation d'entrée somewhere dans le code de formulaire
-   -> action: edit, file: (trouver form/contact), instruction: ajouter validation
-
-7. "déplace la fonction getUser vers auth.py"
-   -> intention: refactorer en déplaçant du code entre fichiers
-   -> action: edit, instruction: déplacer getUser vers auth.py
-
-8. "explique-moi ce que fait ce projet"
-   -> intention: avoir un résumé conversationnel du projet entier
-   -> action: answer, answer: résumé du projet
-
-9. "où est la logique qui gère les erreurs ?"
-   -> intention: localiser le code de gestion d'erreurs
-   -> action: locate, target: gestion erreur
-
-10. "rajoute-moi un try-catch dans process()"
-    -> intention: ajouter gestion d'erreurs autour de la fonction process
-    -> action: edit, file: (auto-détecter), instruction: ajouter try-catch autour de process()
-
-11. "vire la fonction foo" (familier)
-    -> intention: supprimer la fonction foo
-    -> action: delete, target: foo (inférer le fichier depuis le contexte)
-
-12. "change le timeout de 30 à 60"
-    -> intention: trouver et modifier une valeur de configuration
-    -> action: edit, instruction: changer timeout 30->60
-
-13. "fais en sorte que le login marche avec google"
-    -> intention: ajouter authentification Google OAuth
-    -> action: answer/investigate d'abord, puis edit
-
-14. "clean le code de main.py"
-    -> intention: refactorer/nettoyer le code de main.py
-    -> action: edit, file: main.py, instruction: nettoyer/refactorer le code
-
-15. "ajoute des commentaires dans data.py"
-    -> intention: ajouter de la documentation au fichier
-    -> action: edit, file: data.py, instruction: ajouter commentaires pertinents
+PRINCIPE : Quand quelqu'un demande "une application complète", il veut TOUT : modèles, routes, CRUD, auth, frontend, config, requirements. Ne génère pas la moitié. Pense comme un senior qui livre un projet fonctionnel.
 
 RÈGLES DE RAISONNEMENT :
-- Si l'utilisateur mentionne une action floue ("corrige", "améliore", "ajoute"), demande-toi QUOI exactly corriger/améliorer/ajouter
-- Si l'utilisateur mentionne un concept sans fichier ("le système d'auth", "la logique de parsing"), trouve le fichier qui correspond
-- Si l'utilisateur demande quelque chose de vague ("nettoie le bordel", "répare ça"), cible le problème evident
-- Contexte précédent compte : si quelqu'un parle de "ce fichier" puis "supprime la fonction", c'est le même fichier
+1. "application complète" = tous les fichiers nécessaires pour que ça tourne
+2. "CRUD" = Create, Read, Update, Delete pour TOUTES les entités du projet
+3. "ajoute X" = ajoute X ET tout ce qui en dépend (imports, schemas, routes, tests si pertinent)
+4. Si le projet a des entités (User, Product, Order...), elles ont toutes besoin de CRUD
+5. Ne demande jamais de clarification pour quelque chose d'évident dans le contexte
 
-Pour les cas VRAIMENT ambigus (genre "fait quelque chose"), retourne action=ask avec reason claire.
-Pour les cas semi-clairs, fait de ton mieux avec les infos disponibles."""
+TRADUCTIONS D'INTENTION :
+- "crée une app de vente" -> générer backend + frontend + auth + CRUD produits + CRUD commandes + requirements
+- "fait le CRUD" -> implémenter Create/Read/Update/Delete pour toutes les entités existantes
+- "ajoute les fonctionnalités manquantes" -> analyser le projet et compléter ce qui manque
+- "améliore le projet" -> identifier les lacunes et les combler
+- "lis X" -> action: read
+- "où est X" -> action: locate
+- "modifie X" -> action: edit
+- "supprime X" -> action: delete
+
+Pour les cas VRAIMENT ambigus (aucun contexte, aucune entité connue), retourne action=ask.
+Pour tout le reste : agis."""
 
 CODE_SYSTEM_PROMPT = """Tu es un générateur de code expert. L'utilisateur te donne une instruction et le contexte du fichier à modifier. Ta job est de produire le code EXACT qui implémente cette instruction.
 
@@ -402,6 +351,15 @@ def route_query(query, model=None):
     """
     index = load_index()
 
+    # Phase 0: Détection locale des demandes de génération/création
+    _gen_kw = ['creer', 'créer', 'génère', 'genere', 'construis', 'build',
+               'application', 'app complète', 'projet complet', 'backend', 'frontend',
+               'crud', 'endpoint', 'api complète', 'fonctionnalités manquantes',
+               'ajoute les fonctionnalités', 'complète le projet']
+    q_low = query.lower()
+    if any(k in q_low for k in _gen_kw):
+        return {'action': 'generate', 'instruction': query}
+
     # Phase 1: Analyse locale rapide pour les cas évidents
     local_analysis = fast_intent_detection(query)
     if local_analysis.get('confidence') == 'high' and local_analysis.get('action') in ('read', 'locate'):
@@ -554,36 +512,34 @@ def fast_intent_detection(query):
 
 
 def fallback_route(query, index):
-    """Fallback quand Ollama échoue ou retourne du JSON invalide.
-
-    Utilise une analyse heuristique pour déterminer l'action.
-    """
     q = query.lower()
 
-    # Analyse du premier mot/phrase pourdeviner l'action
+    _generate_kw = ['creer', 'créer', 'génère', 'genere', 'construis', 'build', 'fait', 'fais',
+                    'crud', 'application', 'app', 'projet', 'api', 'site', 'backend', 'frontend',
+                    'endpoint', 'route', 'fonctionnalité', 'feature', 'manquant', 'complet']
+    if any(k in q for k in _generate_kw):
+        return {'action': 'generate', 'instruction': query}
+
     action_keywords = {
-        'read': ['lis', 'voir', 'montre', 'affiche', 'contenu', 'cat', 'read', 'consulte', 'montre-moi'],
-        'edit': ['modifie', 'change', 'corrige', 'ajoute', 'rajoute', 'édite', 'edit', 'remplace', 'réécris', 'écris'],
+        'read': ['lis', 'voir', 'montre', 'affiche', 'contenu', 'cat', 'read', 'consulte'],
+        'edit': ['modifie', 'change', 'corrige', 'édite', 'edit', 'remplace', 'réécris'],
         'delete': ['supprime', 'vire', 'delete', 'enlève', 'retire', 'efface'],
-        'locate': ['où', 'ou est', 'trouve', 'localise', 'cherch', 'search', 'où est-ce'],
+        'locate': ['où', 'ou est', 'trouve', 'localise', 'cherch', 'search'],
         'append': ['ajoute à la fin', 'append', 'rajoute à la fin'],
     }
 
     for action, keywords in action_keywords.items():
         if any(k in q for k in keywords):
-            result = {'action': action, 'thought': f'Fallback heuristique: {action}'}
-            # Extraire le fichier
+            result = {'action': action}
             file_hint = extract_file_from_query(query)
             if file_hint:
                 result['file'] = file_hint
-            # Extraire la cible
             target = extract_target_from_query(query)
             if target:
                 result['target'] = target
             return result
 
-    # Dernier recours: ask
-    return {'action': 'ask', 'reason': 'Impossible de déterminer l\'intention automatiquement'}
+    return {'action': 'generate', 'instruction': query}
 
 
 def extract_file_from_query(query):
@@ -1082,41 +1038,36 @@ def apply_project_prompt(prompt_content):
     index = load_index()
     file_list_summary = format_file_index_for_llm(index)
 
-    prompt = f"""Tu es un developpeur expert. Tu dois ECRIRE LE CODE REEL d'un projet complet.
+    prompt = f"""Tu es un architecte logiciel senior fullstack. Tu dois livrer un projet COMPLET et FONCTIONNEL.
 
-CONTEXTE ACTUEL:
-- Fichiers existants: {file_list_summary}
-- Nombre de fichiers: {len(index)}
+FICHIERS EXISTANTS: {file_list_summary}
 
-INSTRUCTIONS DU PROJET:
----
+DIRECTIVE:
 {prompt_content}
----
 
-RÈGLES ABSOLUES:
-1. Le champ "content" doit contenir LE CODE COMPLET ET FONCTIONNEL du fichier (pas un placeholder, pas un commentaire vide).
-2. INTERDIT: "# contenu ici", "# code ici", "# TODO", des commentaires seuls, ou un fichier vide. Tu dois ECRIRE LE VRAI CODE.
-3. Chaque fichier doit etre autonome, executable, avec tous les imports.
-4. Si un fichier existe deja, content = nouvelle version COMPLETE (pas un diff).
-5. Reponds UNIQUEMENT avec un JSON valide, sans texte autour, sans markdown.
+COMPORTEMENT ATTENDU D'UN SENIOR:
+- Si la directive demande une "app complète", tu génères TOUT: modèles, routes CRUD, auth, frontend, config, requirements, README
+- Tu n'attends pas qu'on te demande le CRUD — si il y a des entités, elles ont toutes Create/Read/Update/Delete
+- Tu n'attends pas qu'on te demande les schemas — tu les crées
+- Tu n'attends pas qu'on te demande les tests — tu en crées si pertinent
+- Chaque fichier est COMPLET, avec tous ses imports, prêt à être exécuté
+- Les fichiers sont cohérents entre eux (mêmes noms de classes, mêmes imports)
 
-FORMAT DE REPONSE (exemple concret avec du VRAI CODE):
+INTERDIT:
+- Fichiers vides ou avec juste "# TODO"
+- Fonctions sans corps (juste `pass` ou `...`)
+- Imports manquants
+- Incohérences entre fichiers
+
+FORMAT (JSON strict, pas de markdown autour):
 {{
     "files": [
-        {{
-            "path": "main.py",
-            "action": "create",
-            "content": "from fastapi import FastAPI\\n\\napp = FastAPI()\\n\\n@app.get('/')\\ndef root():\\n    return {{'message': 'Hello'}}\\n"
-        }},
-        {{
-            "path": "requirements.txt",
-            "action": "create",
-            "content": "fastapi==0.110.0\\nuvicorn==0.27.0\\n"
-        }}
+        {{"path": "backend/main.py", "action": "create", "content": "# code complet ici"}},
+        {{"path": "backend/models.py", "action": "create", "content": "# code complet ici"}}
     ]
 }}
 
-Maintenant, genere le projet demande avec du code REEL et FONCTIONNEL."""
+Génère maintenant le projet COMPLET. Sois exhaustif."""
 
     raw = ask_ollama_with_options(prompt, model=DEFAULT_MODEL, response_format='json', temperature=0.3)
     raw = clean_json_response(raw)
@@ -1184,33 +1135,27 @@ def generate_project(directive, model=None):
     """Génère un projet complet (multi-fichiers) en une seule passe."""
     index = load_index()
 
-    prompt = f"""Tu dois créer un projet COMPLET en une seule génération.
+    prompt = f"""Tu es un architecte logiciel senior. On te donne une directive et tu livres un projet COMPLET.
 
-DIRECTIVE UTILISATEUR: {directive}
+DIRECTIVE: {directive}
 
 FICHIERS EXISTANTS: {json.dumps(index, ensure_ascii=False)}
 
-RÈGLES:
-1. Réponds en JSON avec ce format exact:
+RAISONNEMENT ATTENDU:
+- "application de vente" -> tu génères: modèles (Product, User, Order), CRUD complet pour chaque entité, auth JWT, frontend HTML/JS, requirements.txt, README
+- "CRUD de X" -> tu génères tous les endpoints GET/POST/PUT/DELETE + schemas + validation
+- "ajoute Y" -> tu ajoutes Y ET tout ce dont Y a besoin pour fonctionner
+- Tu ne génères pas des stubs vides. Chaque fonction a un corps réel.
+- Les fichiers sont cohérents entre eux (mêmes noms de classes, mêmes imports).
+
+INTERDIT: fonctions vides, `pass` seul, `# TODO`, fichiers sans imports.
+
+FORMAT JSON strict (pas de markdown):
 {{
     "files": [
-        {{"path": "chemin/vers/fichier.py", "content": "# code ici"}},
-        ...
+        {{"path": "chemin/fichier.py", "content": "# code complet"}}
     ]
-}}
-
-2. Chaque fichier doit être COMPLET et exécutable
-3. Tous les imports nécessaires doivent être inclus
-4. Respecte les conventions Python
-5. Assure la cohérence entre les fichiers (mêmes imports, types compatibles)
-6. Crée TOUS les fichiers nécessaires pour que le projet fonctionne
-
-7. Pour les chemins, utilise des noms pertinents:
-   - main.py, config.py, models.py, utils.py, etc.
-   - Organise en sous-dossiers si logique (ex: src/, tests/, etc.)
-
-8. Réponds UNIQUEMENT avec le JSON, pas de texte autour.
-"""
+}}"""
 
     raw = ask_ollama_with_options(prompt, model=model or DEFAULT_MODEL, response_format='json', temperature=0.3)
 
