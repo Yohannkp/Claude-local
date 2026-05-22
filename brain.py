@@ -1103,8 +1103,16 @@ Sois exhaustif. Inclus tous les fichiers nécessaires pour que le projet fonctio
 
     raw = ask_ollama_with_options(plan_prompt, model=DEFAULT_MODEL, response_format='json', temperature=0.1)
     raw = clean_json_response(raw)
-    plan = json.loads(raw)
-    file_paths = [p.lstrip('/\\') for p in plan.get('files', []) if p]
+
+    # Parser le plan avec fallback regex si JSON invalide
+    file_paths = []
+    try:
+        plan = json.loads(raw)
+        file_paths = [p.lstrip('/\\') for p in plan.get('files', []) if isinstance(p, str) and p]
+    except Exception:
+        # Fallback: extraire les chemins de fichiers par regex
+        file_paths = [m.lstrip('/\\') for m in re.findall(r'[\w./\\-]+\.(?:py|html|js|css|txt|md|json|yaml|yml|env)', raw)]
+        file_paths = list(dict.fromkeys(file_paths))  # dédupliquer en gardant l'ordre
 
     if not file_paths:
         print("Le modèle n'a pas retourné de liste de fichiers.")
