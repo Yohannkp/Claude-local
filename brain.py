@@ -244,7 +244,10 @@ def ask_ollama_with_options(prompt, model=None, response_format=None, temperatur
     try:
         with urllib.request.urlopen(request) as response:
             response_json = json.loads(response.read().decode('utf-8'))
-            return response_json.get('message', {}).get('content', '')
+            content = response_json.get('message', {}).get('content', '')
+            # Strip deepseek-r1 thinking tags
+            content = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL).strip()
+            return content
     except urllib.error.HTTPError as error:
         raise RuntimeError(f'Erreur HTTP Ollama: {error.code} {error.reason}') from error
     except urllib.error.URLError as error:
@@ -453,6 +456,9 @@ def format_file_index_for_llm(index, max_files=100):
 
 def clean_json_response(raw):
     """Nettoie une réponse JSON potentiellement corrompue."""
+    # Supprime les balises de raisonnement deepseek-r1
+    raw = re.sub(r'<think>.*?</think>', '', raw, flags=re.DOTALL)
+
     # Supprime les markdown code blocks
     raw = re.sub(r'^```json\s*', '', raw, flags=re.MULTILINE)
     raw = re.sub(r'^```\s*', '', raw, flags=re.MULTILINE)
