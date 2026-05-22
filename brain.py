@@ -10,7 +10,7 @@ import urllib.request
 
 OLLAMA_URL = "http://localhost:11434/api/chat"
 OLLAMA_TAGS_URL = "http://localhost:11434/api/tags"
-_PREFERRED_MODELS = ['qwen2.5-coder:7b', 'qwen2.5-coder:3b', 'deepseek-coder:6.7b',
+_PREFERRED_MODELS = ['deepseek-r1:8b', 'qwen2.5-coder:7b', 'qwen2.5-coder:3b', 'deepseek-coder:6.7b',
                      'deepseek-coder:latest', 'llama3.1:8b', 'llama3:8b', 'mistral:instruct']
 
 def _resolve_default_model():
