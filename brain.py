@@ -1136,6 +1136,20 @@ Sois exhaustif. Inclus tous les fichiers nécessaires pour que le projet fonctio
         except Exception as e:
             print(f"  ✗ Erreur {path}: {e}")
 
+    # Passe 3 : vérification et regénération des fichiers manquants
+    missing = [p for p in file_paths if not os.path.exists(os.path.join(project_root(), p))
+               and os.path.basename(p) not in _PROTECTED]
+    if missing:
+        print(f"\nVérification: {len(missing)} fichier(s) manquant(s), regénération...")
+        for path in missing:
+            print(f"  Retry: {path}...")
+            try:
+                context = ', '.join(created_files[-5:]) if created_files else 'aucun'
+                file_info = _generate_file(path, prompt_content, context)
+                _write_file_info(file_info, created_files, updated_files)
+            except Exception as e:
+                print(f"  ✗ Échec définitif {path}: {e}")
+
     return created_files, updated_files
 
 
