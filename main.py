@@ -738,6 +738,22 @@ def dispatch_action(action, routed, original_query):
         print("🤔 Je n'ai pas identifié de fichier à modifier.")
         return True
 
+    # action=generate: générer du code multi-fichiers (CRUD, endpoints, etc.)
+    if action == 'generate':
+        instruction = (routed.get('instruction') or original_query).strip()
+        print("Génération en cours...")
+        try:
+            files = generate_project(instruction)
+            if files:
+                print(f"\n{len(files)} fichier(s) créé(s)/mis à jour:")
+                for f in files:
+                    print(f"  + {f}")
+            else:
+                print("Aucun fichier généré.")
+        except Exception as e:
+            print(f"Erreur: {e}")
+        return True
+
     # action=create: créer un fichier ou projet
     if action == 'create':
         file_path = (routed.get('file') or '').strip()

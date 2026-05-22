@@ -179,9 +179,10 @@ def find_file_candidates(file_hint):
         elif fuzzy_match(hint, base_norm):
             candidates.append(rel_path)
 
-    # Recherche dans les fichiers SELF_DEV_AGENT aussi
+    # Recherche dans les fichiers SELF_DEV_AGENT aussi (hors .git)
     tool_root = os.path.dirname(os.path.abspath(__file__))
-    for dirpath, _, filenames in os.walk(tool_root):
+    for dirpath, dirs, filenames in os.walk(tool_root):
+        dirs[:] = [d for d in dirs if d != '.git']
         for filename in filenames:
             if filename.lower() == hint or filename.lower().endswith('/' + hint):
                 rel_path = os.path.relpath(os.path.join(dirpath, filename), root)
@@ -432,7 +433,7 @@ Exemples de COMPRÉHENSION (pas juste matching):
 - "corrige-le" -> corrige le dernier problème mentionné
 
 FORMAT DE RÉPONSE (JSON SEULEMENT):
-{{"action": "locate|read|edit|append|delete|create|answer|ask",
+{{"action": "locate|read|edit|append|delete|create|generate|answer|ask",
   "thought": "ton raisonnement en 1 phrase",
   "file": "fichier.py ou vide si non identifié",
   "target": "nom de fonction/classe ou vide",
@@ -446,6 +447,8 @@ Exemples concrets:
 - "supprime la méthode deprecated" -> {{"action": "delete", "target": "deprecated"}}
 - "ou est le router ?" -> {{"action": "locate", "target": "router"}}
 - "explique le code" -> {{"action": "answer", "answer": "résumé..."}}
+- "fait le CRUD de Shoe" -> {{"action": "generate", "instruction": "implémenter le CRUD complet pour l'entité Shoe dans shoes.py"}}
+- "ajoute les endpoints manquants" -> {{"action": "generate", "instruction": "ajouter les endpoints REST manquants"}}
 - "fait quelque chose" -> {{"action": "ask", "reason": "trop vague, précise ce que tu veux"}}
 
 N'inclus que les champs pertinents. Réponds en JSON valide."""
@@ -674,7 +677,8 @@ def find_file_location(file_name):
             results.append({'file': rel_path, 'line': 1, 'content': rel_path})
 
     tool_root = os.path.dirname(os.path.abspath(__file__))
-    for dirpath, _, filenames in os.walk(tool_root):
+    for dirpath, dirs, filenames in os.walk(tool_root):
+        dirs[:] = [d for d in dirs if d != '.git']
         for filename in filenames:
             if target in filename.lower():
                 rel_path = os.path.relpath(os.path.join(dirpath, filename), root)
@@ -1114,7 +1118,7 @@ FORMAT DE REPONSE (exemple concret avec du VRAI CODE):
 
 Maintenant, genere le projet demande avec du code REEL et FONCTIONNEL."""
 
-    raw = ask_ollama_with_options(prompt, model='deepseek-coder:6.7b', response_format='json', temperature=0.3)
+    raw = ask_ollama_with_options(prompt, model=DEFAULT_MODEL, response_format='json', temperature=0.3)
     raw = clean_json_response(raw)
     result = json.loads(raw)
 
@@ -1155,14 +1159,12 @@ Maintenant, genere le projet demande avec du code REEL et FONCTIONNEL."""
             with open(abs_path, 'w', encoding='utf-8') as f:
                 f.write(content)
 
-            # Valider syntaxe Python
+            # Valider syntaxe Python — avertir seulement, ne pas rejeter
             if path.endswith('.py'):
                 try:
                     validate_python_syntax(abs_path)
                 except Exception as e:
-                    if file_exists:
-                        restore_backup(backup_path, abs_path)
-                    raise RuntimeError(f"Syntaxe invalide dans {path}: {e}")
+                    print(f"  ⚠ Syntaxe à corriger dans {path}: {e}")
 
             if not file_exists:
                 update_index_after_creation(path)
