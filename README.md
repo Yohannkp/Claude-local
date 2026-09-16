@@ -1,6 +1,8 @@
 # SELF_DEV_AGENT
 
-Agent autonome de développement local alimenté par Ollama. Comprend tes intentions, lit ton code, le modifie, l'édite et le supprime — en langage naturel.
+Agent autonome de développement local alimenté par Ollama. Comprend tes intentions, génère des projets complets, lit ton code, le modifie et le supprime — en langage naturel.
+
+> Modèles recommandés : **qwen2.5-coder** pour le routage et **deepseek-coder** pour la génération. `install.py` sélectionne automatiquement la taille adaptée à la RAM disponible.
 
 ## Installation
 
@@ -146,6 +148,7 @@ SELF_DEV_AGENT/
 ├── main.py       # Point d'entrée CLI + REPL interactif
 ├── brain.py      # Cerveau : routage, Ollama, édition, suppression
 ├── scanner.py    # Indexation du projet
+├── config.py     # Configuration du projet
 ├── install.py    # Installeur cross-platform (Windows/Linux/macOS)
 ├── selfdev.bat   # Lanceur Windows
 ├── selfdev       # Lanceur Unix (créé par install.py)

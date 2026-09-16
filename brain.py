@@ -1053,7 +1053,7 @@ def _write_file_info(file_info, created_files, updated_files):
 
 
 def _generate_file(path, directive, context_summary):
-    """Génère le contenu d'un seul fichier."""
+    """Génère le contenu d'un seul fichier (texte brut, sans JSON)."""
     prompt = f"""Tu es un développeur senior. Génère le fichier '{path}' pour ce projet.
 
 DIRECTIVE DU PROJET:
@@ -1061,30 +1061,14 @@ DIRECTIVE DU PROJET:
 
 FICHIERS DÉJÀ CRÉÉS: {context_summary}
 
-RÈGLES:
-- Génère UNIQUEMENT le contenu du fichier '{path}', complet et fonctionnel
+RÈGLES ABSOLUES:
+- Retourne UNIQUEMENT le contenu brut du fichier, rien d'autre
+- Pas de markdown, pas de backticks, pas d'explication
 - Tous les imports nécessaires inclus
-- Pas de placeholder, pas de TODO, du vrai code
-- Le contenu doit être une STRING JSON valide (échappe les guillemets avec \\")
-
-FORMAT JSON STRICT (un seul objet, pas de tableau):
-{{"path": "{path}", "content": "code ici sur une ligne avec \\n pour les sauts de ligne"}}"""
-    raw = ask_ollama_with_options(prompt, model=DEFAULT_MODEL, response_format='json', temperature=0.1)
-    raw = clean_json_response(raw)
-
-    # Si le modèle retourne un tableau, prendre le premier élément
-    if raw.strip().startswith('['):
-        items = json.loads(raw)
-        return items[0] if items else {}
-
-    result = json.loads(raw)
-    # Si le modèle retourne {"files": [...]}, extraire le bon fichier
-    if 'files' in result:
-        for f in result['files']:
-            if f.get('path', '').endswith(os.path.basename(path)):
-                return f
-        return result['files'][0] if result['files'] else {}
-    return result
+- Pas de placeholder, pas de TODO, du vrai code fonctionnel"""
+    content = ask_ollama_with_options(prompt, model=DEFAULT_MODEL, temperature=0.1)
+    content = clean_code_output(content)
+    return {'path': path, 'content': content}
 
 
 def apply_project_prompt(prompt_content):
@@ -1104,15 +1088,23 @@ Sois exhaustif. Inclus tous les fichiers nécessaires pour que le projet fonctio
     raw = ask_ollama_with_options(plan_prompt, model=DEFAULT_MODEL, response_format='json', temperature=0.1)
     raw = clean_json_response(raw)
 
-    # Parser le plan avec fallback regex si JSON invalide
+    _FILE_RE = r'[\w./\\-]+\.(?:py|html|js|css|txt|md|json|yaml|yml|env)'
+
+    # Parser le plan avec fallback regex si JSON invalide ou vide
     file_paths = []
     try:
         plan = json.loads(raw)
         file_paths = [p.lstrip('/\\') for p in plan.get('files', []) if isinstance(p, str) and p]
     except Exception:
-        # Fallback: extraire les chemins de fichiers par regex
-        file_paths = [m.lstrip('/\\') for m in re.findall(r'[\w./\\-]+\.(?:py|html|js|css|txt|md|json|yaml|yml|env)', raw)]
-        file_paths = list(dict.fromkeys(file_paths))  # dédupliquer en gardant l'ordre
+        pass
+
+    if not file_paths:
+        # Fallback 1: extraire depuis la réponse du modèle
+        file_paths = list(dict.fromkeys(m.lstrip('/\\') for m in re.findall(_FILE_RE, raw)))
+
+    if not file_paths:
+        # Fallback 2: extraire directement depuis le prompt (structure déjà listée)
+        file_paths = list(dict.fromkeys(m.lstrip('/\\') for m in re.findall(_FILE_RE, prompt_content)))
 
     if not file_paths:
         print("Le modèle n'a pas retourné de liste de fichiers.")

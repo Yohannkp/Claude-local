@@ -38,6 +38,15 @@ RC_BLOCK_END = '# <<< SELF_DEV_AGENT <<<'
 
 # ----------------------------- helpers -----------------------------
 
+def progress_bar(count, total, label=''):
+    filled = int(40 * count / total) if total else 40
+    bar = '#' * filled + '-' * (40 - filled)
+    pct = int(100 * count / total) if total else 100
+    print(f"\r  [{bar}] {pct:3d}%  {label}", end='', flush=True)
+    if count >= total:
+        print()
+
+
 def log(msg, level='info'):
     prefix = {
         'info': '[*]',
@@ -212,7 +221,8 @@ def install_ollama_windows(auto_yes):
     url = OLLAMA_DOWNLOADS['Windows']
     target = os.path.join(os.environ.get('TEMP', SCRIPT_DIR), 'OllamaSetup.exe')
     log(f"Telechargement: {url}")
-    urllib.request.urlretrieve(url, target)
+    urllib.request.urlretrieve(url, target,
+        reporthook=lambda b, bs, t: progress_bar(min(b * bs, t), t, 'OllamaSetup.exe'))
     log("Lancement de l'installeur (silencieux)...")
     run([target, '/SILENT'], check=False)
     return shutil.which('ollama') is not None
@@ -234,7 +244,8 @@ def install_ollama_macos(auto_yes):
     url = OLLAMA_DOWNLOADS['Darwin']
     target = os.path.join('/tmp', 'Ollama-darwin.zip')
     log(f"Telechargement: {url}")
-    urllib.request.urlretrieve(url, target)
+    urllib.request.urlretrieve(url, target,
+        reporthook=lambda b, bs, t: progress_bar(min(b * bs, t), t, 'Ollama-darwin.zip'))
     log("Extraction dans /Applications/...")
     run(['unzip', '-o', target, '-d', '/Applications/'], check=False)
     run(['open', '/Applications/Ollama.app'], check=False)
@@ -277,7 +288,23 @@ def start_ollama_service():
 
 def pull_model(name):
     log(f"Pull du modele {name} (cela peut prendre plusieurs minutes)...")
-    run(['ollama', 'pull', name], check=True)
+    proc = subprocess.Popen(['ollama', 'pull', name], stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, text=True)
+    total = 0
+    done = 0
+    for line in proc.stdout:
+        line = line.strip()
+        # ollama imprime des lignes comme "pulling ... 45% ▕███  ▏ 1.2 GB/2.7 GB"
+        if '%' in line:
+            try:
+                pct = int(line.split('%')[0].split()[-1])
+                progress_bar(pct, 100, name)
+            except (ValueError, IndexError):
+                pass
+    proc.wait()
+    if proc.returncode != 0:
+        raise subprocess.CalledProcessError(proc.returncode, ['ollama', 'pull', name])
+    progress_bar(100, 100, name)
     log(f"Modele {name} pret.", 'ok')
 
 
