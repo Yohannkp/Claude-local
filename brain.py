@@ -1,5 +1,6 @@
 
 import ast
+import difflib
 import json
 import os
 import re
@@ -28,6 +29,48 @@ def _resolve_default_model():
         return env or 'qwen2.5-coder:7b'
 
 DEFAULT_MODEL = _resolve_default_model()
+
+# Sous-chaînes de noms de modèles, par ordre de préférence, pour la boucle agentique.
+# Les variantes "-coder" (ex: qwen2.5-coder) ont un excellent niveau en génération de code
+# mais suivent moins bien le format tool-calling structuré d'Ollama que les variantes
+# "instruct" généralistes : on les laisse donc en dernier recours.
+# qwen2.5:*-instruct est préféré à qwen3 (modèle hybride "thinking") : il gère le
+# tool-calling tout aussi bien mais sans le surcoût d'une longue trace de raisonnement
+# à chaque étape, ce qui compte beaucoup pour une boucle agentique multi-appels
+# sur du matériel local limité.
+_AGENT_PREFERRED_SUBSTRINGS = ['qwen2.5:', 'qwen3:', 'llama3.1', 'mistral-nemo',
+                               'llama3:', 'mistral:instruct', 'qwen2.5-coder', 'deepseek-coder']
+
+# Taille de contexte envoyée à Ollama. Sans ce paramètre, Ollama retombe souvent sur un
+# défaut modeste (2048-4096 tokens) même si le modèle supporte bien plus : sur une session
+# agentique longue (beaucoup de fichiers lus/édités), le début de la conversation sortirait
+# silencieusement du contexte. 16384 est un compromis raisonnable pour un gros projet sans
+# faire exploser le temps d'inférence sur du matériel local limité. Ajustable via env var.
+NUM_CTX = int(os.environ.get('SELF_DEV_AGENT_NUM_CTX', '16384'))
+
+
+def _resolve_agent_model():
+    """Choisit un modèle compatible tool-calling pour la boucle agentique.
+
+    deepseek-r1 (modèle de raisonnement) n'expose pas de tool-calling fiable
+    dans Ollama, donc on l'exclut. Voir _AGENT_PREFERRED_SUBSTRINGS pour l'ordre.
+    """
+    env = os.environ.get('SELF_DEV_AGENT_MODEL', '')
+    try:
+        with urllib.request.urlopen(OLLAMA_TAGS_URL, timeout=3) as r:
+            models = [m['name'] for m in json.loads(r.read()).get('models', [])]
+        if env and env in models:
+            return env
+        for pref in _AGENT_PREFERRED_SUBSTRINGS:
+            for candidate in models:
+                if pref in candidate:
+                    return candidate
+        return DEFAULT_MODEL
+    except Exception:
+        return env or DEFAULT_MODEL
+
+
+AGENT_MODEL = _resolve_agent_model()
 
 ROUTER_SYSTEM_PROMPT = """Tu es un architecte logiciel senior qui assiste un développeur. Tu dois ANTICIPER ce qu'il faut faire, pas juste répondre à la lettre.
 
@@ -107,26 +150,31 @@ def normalize_path_hint(file_hint):
 
 
 def find_file_candidates(file_hint):
+    """Résout un indice de fichier en chemin(s) réels.
+
+    Les matches exacts (nom de fichier identique) priment toujours sur les
+    matches flous : si 'calculator.py' existe, il ne doit jamais devenir
+    ambigu à cause d'un fichier voisin comme 'test_calculator.py'.
+    """
     root = project_root()
     hint = normalize_path_hint(file_hint)
     if not hint:
         return []
 
-    candidates = []
+    exact_candidates = []
+    fuzzy_candidates = []
+
     direct_path = os.path.join(root, file_hint)
     if os.path.isfile(direct_path):
-        candidates.append(os.path.relpath(direct_path, root))
+        exact_candidates.append(os.path.relpath(direct_path, root))
 
     for rel_path in load_index():
         rel_norm = rel_path.replace('\\', '/').lower()
         base_norm = os.path.basename(rel_norm)
-        if hint == rel_norm or hint == base_norm:
-            candidates.append(rel_path)
-        elif rel_norm.endswith('/' + hint):
-            candidates.append(rel_path)
-        # Recherche floue: mots-clés dans le chemin
+        if hint == rel_norm or hint == base_norm or rel_norm.endswith('/' + hint):
+            exact_candidates.append(rel_path)
         elif fuzzy_match(hint, base_norm):
-            candidates.append(rel_path)
+            fuzzy_candidates.append(rel_path)
 
     # Recherche dans les fichiers SELF_DEV_AGENT aussi (hors .git)
     tool_root = os.path.dirname(os.path.abspath(__file__))
@@ -135,7 +183,9 @@ def find_file_candidates(file_hint):
         for filename in filenames:
             if filename.lower() == hint or filename.lower().endswith('/' + hint):
                 rel_path = os.path.relpath(os.path.join(dirpath, filename), root)
-                candidates.append(rel_path)
+                exact_candidates.append(rel_path)
+
+    candidates = exact_candidates if exact_candidates else fuzzy_candidates
 
     unique = []
     seen = set()
@@ -148,26 +198,33 @@ def find_file_candidates(file_hint):
 
 
 def fuzzy_match(hint, filename):
-    """匹配 floue entre un hint et un nom de fichier.
+    """Matching flou entre un hint et un nom de fichier.
 
-    Par exemple: 'config' correspond à 'config.py', 'settings.py', 'app_config.py'
+    Par exemple: 'config' correspond à 'config.py', 'settings.py', 'app_config.py'.
+    N'est utilisé que lorsqu'aucun fichier ne correspond exactement (voir
+    find_file_candidates), donc les faux positifs y sont moins risqués.
     """
-    hint_clean = hint.replace('_', '').replace('-', '').lower()
+    hint_clean = hint.replace('_', '').replace('-', '').replace('.py', '').lower()
     filename_clean = filename.replace('_', '').replace('-', '').replace('.py', '').lower()
+
+    if not hint_clean or not filename_clean:
+        return False
 
     # Mot exact dans le nom
     if hint_clean in filename_clean:
         return True
 
-    # Tous les mots du hint sont dans le filename
+    # Tous les mots du hint sont dans le filename (hint multi-mots seulement)
     hint_words = hint_clean.split()
-    if all(word in filename_clean for word in hint_words):
+    if len(hint_words) > 1 and all(word in filename_clean for word in hint_words):
         return True
 
-    # Matching partiel (au moins 60% de similarité)
+    # Similarité de séquence (ordre des caractères pris en compte, contrairement
+    # à un simple comptage d'intersection qui matcherait trop facilement des
+    # fichiers partageant juste beaucoup de lettres, ex: config.py / app_config.py)
     if len(hint_clean) >= 3 and len(filename_clean) >= 3:
-        similarity = sum(1 for c in hint_clean if c in filename_clean) / len(hint_clean)
-        if similarity >= 0.6:
+        ratio = difflib.SequenceMatcher(None, hint_clean, filename_clean).ratio()
+        if ratio >= 0.75:
             return True
 
     return False
@@ -234,7 +291,7 @@ def ask_ollama_with_options(prompt, model=None, response_format=None, temperatur
         'model': model or DEFAULT_MODEL,
         'messages': [{'role': 'user', 'content': prompt}],
         'stream': False,
-        'options': {'temperature': temperature},
+        'options': {'temperature': temperature, 'num_ctx': NUM_CTX},
     }
     if response_format is not None:
         payload['format'] = response_format
@@ -242,7 +299,7 @@ def ask_ollama_with_options(prompt, model=None, response_format=None, temperatur
     request = urllib.request.Request(OLLAMA_URL, data=data, headers={'Content-Type': 'application/json'})
 
     try:
-        with urllib.request.urlopen(request) as response:
+        with urllib.request.urlopen(request, timeout=300) as response:
             response_json = json.loads(response.read().decode('utf-8'))
             content = response_json.get('message', {}).get('content', '')
             # Strip deepseek-r1 thinking tags
@@ -250,8 +307,38 @@ def ask_ollama_with_options(prompt, model=None, response_format=None, temperatur
             return content
     except urllib.error.HTTPError as error:
         raise RuntimeError(f'Erreur HTTP Ollama: {error.code} {error.reason}') from error
-    except urllib.error.URLError as error:
-        raise RuntimeError(f'Erreur de connexion Ollama: {error.reason}') from error
+    except (urllib.error.URLError, TimeoutError, OSError) as error:
+        raise RuntimeError(f'Erreur de connexion Ollama: {error}') from error
+
+
+def chat_completion(messages, tools=None, model=None, temperature=0.2):
+    """Appel bas niveau à /api/chat avec support du tool-calling.
+
+    Retourne le message complet renvoyé par Ollama (avec 'content' et,
+    le cas échéant, 'tool_calls'), pas seulement le texte.
+    """
+    payload = {
+        'model': model or AGENT_MODEL,
+        'messages': messages,
+        'stream': False,
+        'options': {'temperature': temperature, 'num_ctx': NUM_CTX},
+    }
+    if tools:
+        payload['tools'] = tools
+    data = json.dumps(payload).encode('utf-8')
+    request = urllib.request.Request(OLLAMA_URL, data=data, headers={'Content-Type': 'application/json'})
+
+    try:
+        with urllib.request.urlopen(request, timeout=300) as response:
+            response_json = json.loads(response.read().decode('utf-8'))
+            message = dict(response_json.get('message') or {})
+            content = message.get('content', '') or ''
+            message['content'] = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL).strip()
+            return message
+    except urllib.error.HTTPError as error:
+        raise RuntimeError(f'Erreur HTTP Ollama: {error.code} {error.reason}') from error
+    except (urllib.error.URLError, TimeoutError, OSError) as error:
+        raise RuntimeError(f'Erreur de connexion Ollama: {error}') from error
 
 
 def clean_code_output(text):

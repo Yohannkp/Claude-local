@@ -36,6 +36,7 @@ from brain import (
     apply_project_prompt,
 )
 from scanner import main as scan_main
+from agent import run_agent
 
 
 def project_root():
@@ -642,12 +643,25 @@ def cmd_ask(args):
             print(conversational_answer(rest))
             return
 
-    # Routage principal via Ollama
+    # Routage principal : boucle agentique (exploration + actions multi-étapes via Ollama)
+    def _on_tool(name, args):
+        preview = ', '.join(f"{k}={v!r}" for k, v in (args or {}).items())
+        if len(preview) > 120:
+            preview = preview[:120] + '...'
+        print(f"  → {name}({preview})")
+
+    try:
+        answer = run_agent(query, on_tool=_on_tool)
+        print(answer)
+        return
+    except RuntimeError as e:
+        print(f"⚠ Ollama indisponible ({e})")
+        print("→ Utilisation du fallback local (routage simplifié, sans agent)...")
+
     try:
         routed = route_query(query)
     except Exception as e:
         print(f"⚠ Erreur de routage Ollama: {e}")
-        print("→ Utilisation du fallback local...")
         routed = infer_local_action(query)
 
     action = routed.get('action', 'answer')

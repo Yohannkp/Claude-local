@@ -4,12 +4,14 @@ import os
 
 def scan_directory(root_dir):
     file_index = []
-    excluded_dirs = {'.knowledge_base', 'SELF_DEV_AGENT'}
+    excluded_dirs = {'.knowledge_base', 'SELF_DEV_AGENT', '__pycache__', '.git',
+                      'node_modules', '.venv', 'venv', '.mypy_cache', '.pytest_cache'}
+    excluded_suffixes = ('.pyc', '.pyo', '.bak')
 
     for dirpath, dirnames, filenames in os.walk(root_dir):
         dirnames[:] = [directory for directory in dirnames if directory not in excluded_dirs]
         for filename in filenames:
-            if filename in excluded_dirs:
+            if filename in excluded_dirs or filename.endswith(excluded_suffixes):
                 continue
             file_index.append(os.path.relpath(os.path.join(dirpath, filename), root_dir))
 

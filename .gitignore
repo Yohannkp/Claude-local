@@ -4,3 +4,5 @@ __pycache__/
 .env
 .knowledge_base/
 *.log
+.bak
+*.bak
